@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 构建产物（通过 Releases 分发，不入库）
+dist/*.apk
+
+# 系统文件
+.DS_Store
+Thumbs.db

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PDF 页面提取</string>
+
+    <string name="step1_title">1. 选择 PDF 文件</string>
+    <string name="btn_pick_pdf">选择 PDF 文件…</string>
+    <string name="no_pdf">未加载 PDF 文件</string>
+    <string name="pdf_loaded">已加载：%1$s（共 %2$d 页）</string>
+
+    <string name="step2_title">2. 设置要提取的页面范围</string>
+    <string name="btn_preview">预览选页…</string>
+    <string name="btn_template">下载 Excel 导入模板</string>
+    <string name="btn_import">导入 Excel</string>
+    <string name="btn_paste">从剪贴板批量粘贴</string>
+    <string name="btn_add_group">＋ 添加一组</string>
+    <string name="btn_clear">清空</string>
+    <string name="range_count">共 %1$d 组</string>
+
+    <string name="group_title">第 %1$d 组</string>
+    <string name="label_start">起始页（必填）</string>
+    <string name="label_end">结束页（留空 = 只提取起始页这一页）</string>
+    <string name="hint_start">如 3</string>
+    <string name="hint_end">如 18，可留空</string>
+    <string name="btn_delete_row">删除</string>
+    <string name="range_desc_single">提取：第 %1$s 页</string>
+    <string name="range_desc_range">提取：第 %1$s ~ %2$s 页</string>
+    <string name="range_desc_invalid">页码待填写</string>
+
+    <string name="step3_title">3. 执行提取</string>
+    <string name="btn_extract">提取页面并保存…</string>
+
+    <string name="hint_paste">提示：在 Excel 中复制两列数据（第一列起始页、第二列结束页），在任意「起始页」输入框中长按粘贴即可批量导入；也可点击下方「从剪贴板批量粘贴」按钮。</string>
+
+    <string name="err_pick_pdf_first">请先选择 PDF 文件。</string>
+    <string name="err_no_ranges">请先添加至少一组页面范围。</string>
+    <string name="err_start_invalid">第 %1$d 组：起始页无效（须为正整数）。</string>
+    <string name="err_end_invalid">第 %1$d 组：结束页无效（须为正整数或留空）。</string>
+    <string name="err_start_zero">第 %1$d 组：起始页须 ≥ 1。</string>
+    <string name="err_end_lt_start">第 %1$d 组：结束页不能小于起始页。</string>
+    <string name="err_start_exceed">第 %1$d 组：起始页 %2$s 超出总页数 %3$d。</string>
+    <string name="err_end_exceed">第 %1$d 组：结束页 %2$s 超出总页数 %3$d。</string>
+
+    <string name="dlg_extracting">正在提取，请稍候…</string>
+    <string name="dlg_loading">正在读取，请稍候…</string>
+    <string name="msg_extract_ok">提取成功！共 %1$d 页，已保存。</string>
+    <string name="msg_extract_fail">提取失败：%1$s</string>
+    <string name="msg_pdf_load_fail">PDF 读取失败：%1$s</string>
+    <string name="msg_template_ok">模板已保存，请编辑后通过「导入 Excel」上传。</string>
+    <string name="msg_template_fail">保存模板失败：%1$s</string>
+    <string name="msg_import_ok">已从 Excel 导入 %1$d 组页面范围。</string>
+    <string name="msg_import_fail">导入失败：%1$s</string>
+    <string name="msg_paste_ok">已批量导入 %1$d 组页面范围。</string>
+    <string name="msg_paste_none">剪贴板中没有可识别的页面范围数据（需为数字，每行一组，Tab 分隔两列）。</string>
+    <string name="msg_cleared">已清空页面范围列表。</string>
+    <string name="msg_cancelled">已取消。</string>
+
+    <string name="default_output_name">%1$s_提取结果.pdf</string>
+    <string name="template_file_name">PDF页面提取-导入模板.xlsx</string>
+
+    <string name="preview_title">预览选页</string>
+    <string name="preview_title_n">预览选页（共 %1$d 页）</string>
+    <string name="preview_hint">点击页面缩略图选中/取消；确认后所选页面将自动填入页面范围。</string>
+    <string name="btn_select_all">全选 / 取消全选</string>
+    <string name="btn_confirm_selection">确认选择</string>
+    <string name="preview_selected_count">已选 %1$d 页</string>
+    <string name="msg_preview_fill_ok">已从预览导入 %1$d 组页面范围（共 %2$d 页）。</string>
+</resources>
