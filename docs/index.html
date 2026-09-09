@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 页面提取工具 - 下载</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: #f0f4ff;
+        }
+
+        .card {
+            background: #fff;
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, .08);
+            max-width: 360px;
+        }
+
+        .btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 14px 40px;
+            background: #2563eb;
+            color: #fff;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 18px;
+        }
+
+        .tip {
+            color: #888;
+            font-size: 13px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>PDF 页面提取工具</h1>
+        <p>正在为你下载最新版安装包…</p>
+        <a class="btn" id="dl"
+            href="https://github.com/zenglingqian/pdf-page-extractor-android/releases/latest/download/PdfPageExtractor.apk">点击下载
+            APK</a>
+        <p class="tip">如果没自动开始，请点上方按钮<br>下载后点击文件即可安装（需允许"未知来源"安装）</p>
+    </div>
+    <script>
+        window.onload = function () { document.getElementById('dl').click(); };
+    </script>
+</body>
+
+</html>
