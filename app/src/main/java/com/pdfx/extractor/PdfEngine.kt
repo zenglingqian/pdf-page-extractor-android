@@ -29,7 +29,16 @@ object PdfEngine {
         var s = ""                              // STR / NAME（STR 以 ISO-8859-1 保存原始字节）
         val a = ArrayList<Obj?>()               // ARR
         val d = ArrayList<Pair<String, Obj?>>() // DICT（保序）
-        var raw = ByteArray(0)                  // STREAM 原始字节
+        var raw = ByteArray(0)                  // 已物化的字节（ObjStm 解析 / 解码结果）
+        internal var srcRef: Src? = null                 // STREAM 原始字节的懒引用（大文件不物化）
+        var rawStart = 0
+        var rawLen = 0
+        val rawLength: Int get() = if (srcRef == null) raw.size else rawLen
+        fun rawBytes(): ByteArray = if (srcRef == null) raw else srcRef!!.slice(rawStart, rawLen)
+        fun writeRawTo(out: OutputStream) {
+            val s = srcRef
+            if (s == null) out.write(raw) else s.writeTo(rawStart, rawLen, out)
+        }
         var rn = 0                              // REF 对象号
         var rg = 0                              // REF 代号
 
@@ -54,42 +63,106 @@ object PdfEngine {
     private fun mkDict() = Obj(T.DICT)
     private fun mkRef(n: Int, g: Int) = Obj(T.REF).apply { rn = n; rg = g }
 
+    // ---------------- 字节源 ----------------
+    // 抽象字节源：小文件走内存（MemSrc），大文件走内存映射（MmapSrc）。
+    // 解析器按需读取，避免把整个 PDF 读进 Java 堆导致 OOM。
+    internal abstract class Src {
+        abstract val n: Int
+        abstract operator fun get(i: Int): Int
+        abstract fun slice(start: Int, len: Int): ByteArray
+        abstract fun writeTo(start: Int, len: Int, out: OutputStream)
+        open fun close() {}
+    }
+
+    private class MemSrc(val data: ByteArray) : Src() {
+        override val n: Int get() = data.size
+        override fun get(i: Int): Int = data[i].toInt() and 0xFF
+        override fun slice(start: Int, len: Int): ByteArray = data.copyOfRange(start, start + len)
+        override fun writeTo(start: Int, len: Int, out: OutputStream) = out.write(data, start, len)
+    }
+
+    private class MmapSrc(file: File) : Src() {
+        private val raf = java.io.RandomAccessFile(file, "r")
+        private val buf: java.nio.MappedByteBuffer
+        override val n: Int get() = buf.capacity()
+
+        init {
+            val sz = raf.length()
+            if (sz > Int.MAX_VALUE - 8) {
+                raf.close()
+                throw PdfException("文件超过 2GB，暂不支持")
+            }
+            buf = raf.channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, sz)
+        }
+
+        override fun get(i: Int): Int = buf.get(i).toInt() and 0xFF
+        override fun slice(start: Int, len: Int): ByteArray {
+            val out = ByteArray(len)
+            val dup = buf.duplicate()
+            dup.position(start)
+            dup.get(out, 0, len)
+            return out
+        }
+
+        override fun writeTo(start: Int, len: Int, out: OutputStream) {
+            val dup = buf.duplicate()
+            dup.position(start)
+            val scratch = ByteArray(65536)
+            var left = len
+            while (left > 0) {
+                val k = minOf(scratch.size, left)
+                dup.get(scratch, 0, k)
+                out.write(scratch, 0, k)
+                left -= k
+            }
+        }
+
+        override fun close() { try { raf.close() } catch (_: Exception) {} }
+    }
+
+    // 边写边落盘的计数输出流（避免把整个输出缓冲在内存里）
+    private class CountingOut(val real: OutputStream) : OutputStream() {
+        var count = 0
+        override fun write(b: Int) { real.write(b); count++ }
+        override fun write(b: ByteArray, off: Int, len: Int) { real.write(b, off, len); count += len }
+    }
+
     // ---------------- 字节工具 ----------------
     private fun isWS(c: Int) = c == 0 || c == 9 || c == 10 || c == 12 || c == 13 || c == 32
     private fun isDelim(c: Int) = c == '('.code || c == ')'.code || c == '<'.code || c == '>'.code ||
         c == '['.code || c == ']'.code || c == '{'.code || c == '}'.code || c == '/'.code || c == '%'.code
     private fun isDigitC(c: Int) = c in '0'.code..'9'.code
 
-    private fun indexOfPattern(data: ByteArray, pat: ByteArray, from: Int = 0): Int {
-        val last = data.size - pat.size
+    private fun indexOfPattern(data: Src, pat: ByteArray, from: Int = 0): Int {
+        val last = data.n - pat.size
         if (last < from) return -1
         outer@ for (i in from..last) {
-            for (j in pat.indices) if (data[i + j] != pat[j]) continue@outer
+            for (j in pat.indices) if (data[i + j] != (pat[j].toInt() and 0xFF)) continue@outer
             return i
         }
         return -1
     }
 
-    private fun lastIndexOfPattern(data: ByteArray, pat: ByteArray): Int {
-        outer@ for (i in data.size - pat.size downTo 0) {
-            for (j in pat.indices) if (data[i + j] != pat[j]) continue@outer
+    private fun lastIndexOfPattern(data: Src, pat: ByteArray): Int {
+        outer@ for (i in data.n - pat.size downTo 0) {
+            for (j in pat.indices) if (data[i + j] != (pat[j].toInt() and 0xFF)) continue@outer
             return i
         }
         return -1
     }
 
-    private class Reader(val data: ByteArray, var pos: Int = 0) {
-        val n: Int get() = data.size
+    private class Reader(val src: Src, var pos: Int = 0) {
+        val n: Int get() = src.n
         fun eof() = pos >= n
-        fun cur(): Int = if (pos < n) data[pos].toInt() and 0xFF else 0
-        fun at(i: Int): Int = if (i in 0 until n) data[i].toInt() and 0xFF else 0
+        fun cur(): Int = if (pos < n) src[pos] else 0
+        fun at(i: Int): Int = if (i in 0 until n) src[i] else 0
 
         fun skipWs() {
             while (pos < n) {
-                val c = data[pos].toInt() and 0xFF
+                val c = src[pos]
                 if (isWS(c)) { pos++; continue }
                 if (c == '%'.code) {
-                    while (pos < n && data[pos].toInt() != '\n'.code && data[pos].toInt() != '\r'.code) pos++
+                    while (pos < n && src[pos] != '\n'.code && src[pos] != '\r'.code) pos++
                     continue
                 }
                 break
@@ -100,10 +173,10 @@ object PdfEngine {
             val l = kw.length
             if (pos + l > n) return false
             for (i in 0 until l) {
-                if ((data[pos + i].toInt() and 0xFF) != kw[i].code) return false
+                if (src[pos + i] != kw[i].code) return false
             }
             if (pos + l < n) {
-                val c = data[pos + l].toInt() and 0xFF
+                val c = src[pos + l]
                 if (!isWS(c) && !isDelim(c)) return false
             }
             pos += l
@@ -278,17 +351,17 @@ object PdfEngine {
                     val lObj = d.get("Length")
                     val len = if (lObj != null && lObj.t == T.NUM) lObj.n.toLong() else 0L
                     d.t = T.STREAM
-                    if (len > 0 && r.pos + len <= r.n) {
-                        d.raw = r.data.copyOfRange(r.pos, r.pos + len.toInt())
+                    if (len > 0 && len <= Int.MAX_VALUE && r.pos + len <= r.n) {
+                        d.srcRef = r.src; d.rawStart = r.pos; d.rawLen = len.toInt()
                         r.pos += len.toInt()
                     } else {
                         // 长度不可靠：扫描 endstream
-                        var e = indexOfPattern(r.data, "endstream".toByteArray(Charsets.US_ASCII), r.pos)
+                        var e = indexOfPattern(r.src, "endstream".toByteArray(Charsets.US_ASCII), r.pos)
                         if (e < 0) e = r.n
                         var end = e
                         // 去掉末尾换行
-                        while (end > r.pos && (r.data[end - 1].toInt() == '\n'.code || r.data[end - 1].toInt() == '\r'.code)) end--
-                        d.raw = r.data.copyOfRange(r.pos, end)
+                        while (end > r.pos && (r.src[end - 1] == '\n'.code || r.src[end - 1] == '\r'.code)) end--
+                        d.srcRef = r.src; d.rawStart = r.pos; d.rawLen = end - r.pos
                         r.pos = e
                     }
                     r.match("endstream")
@@ -318,14 +391,14 @@ object PdfEngine {
             if (isInt[0]) {
                 // 尝试 "N G R"
                 var p = r.pos
-                while (p < r.n && isWS(r.data[p].toInt() and 0xFF)) p++
-                if (p < r.n && isDigitC(r.data[p].toInt() and 0xFF)) {
-                    val r2 = Reader(r.data, p)
+                while (p < r.n && isWS(r.src[p])) p++
+                if (p < r.n && isDigitC(r.src[p])) {
+                    val r2 = Reader(r.src, p)
                     val g = parseInt(r2)
                     var q = r2.pos
-                    while (q < r.n && isWS(r.data[q].toInt() and 0xFF)) q++
-                    if (q < r.n && r.data[q].toInt() == 'R'.code) {
-                        val nx = if (q + 1 < r.n) r.data[q + 1].toInt() and 0xFF else 0
+                    while (q < r.n && isWS(r.src[q])) q++
+                    if (q < r.n && r.src[q] == 'R'.code) {
+                        val nx = if (q + 1 < r.n) r.src[q + 1] else 0
                         if (nx == 0 || isWS(nx) || isDelim(nx)) {
                             r.pos = q + 1
                             return mkRef(n1.toInt(), g.toInt())
@@ -400,7 +473,7 @@ object PdfEngine {
     private class XrefEntry(val type: Int, val f2: Long, val f3: Int)
 
     private class Doc {
-        var data = ByteArray(0)
+        var src: Src = MemSrc(ByteArray(0))
         val xref = HashMap<Int, XrefEntry>()
         private val cache = HashMap<Int, Obj?>()
         private val objStmCache = HashMap<Int, HashMap<Int, Obj?>>()
@@ -410,10 +483,10 @@ object PdfEngine {
         private var mainTrailer: Obj? = null
         private var prevOut: Obj? = null
 
-        fun load(bytes: ByteArray): Boolean {
-            data = bytes
+        fun load(s: Src): Boolean {
+            src = s
             // 允许 %PDF- 前有少量垃圾字节（真实文件常见）
-            val hdr = indexOfPattern(data, "%PDF-".toByteArray(Charsets.US_ASCII))
+            val hdr = indexOfPattern(src, "%PDF-".toByteArray(Charsets.US_ASCII))
             if (hdr < 0 || hdr > 1024) {
                 err = "不是有效的 PDF 文件（缺少 %PDF- 头）"
                 return false
@@ -444,16 +517,16 @@ object PdfEngine {
         }
 
         private fun findStartXref(): Long {
-            val found = lastIndexOfPattern(data, "startxref".toByteArray(Charsets.US_ASCII))
+            val found = lastIndexOfPattern(src, "startxref".toByteArray(Charsets.US_ASCII))
             if (found < 0) return -1
-            val r = Reader(data, found + 9)
+            val r = Reader(src, found + 9)
             r.skipWs()
             return parseInt(r)
         }
 
         private fun parseObjectAt(offset: Int): Obj? {
-            if (offset < 0 || offset >= data.size) return null
-            val r = Reader(data, offset)
+            if (offset < 0 || offset >= src.n) return null
+            val r = Reader(src, offset)
             r.skipWs()
             // 期望 "N G obj"
             parseInt(r) // obj num
@@ -479,11 +552,11 @@ object PdfEngine {
         }
 
         private fun parseXrefSection(offset: Int, first: Boolean): Boolean {
-            if (offset < 0 || offset >= data.size) {
+            if (offset < 0 || offset >= src.n) {
                 err = "xref 解析失败"
                 return false
             }
-            val r = Reader(data, offset)
+            val r = Reader(src, offset)
             r.skipWs()
             prevOut = null
             if (r.cur() == 'x'.code) {
@@ -593,7 +666,7 @@ object PdfEngine {
         fun decodeStream(o: Obj?): ByteArray? {
             if (o == null || o.t != T.STREAM) return null
             val f = o.get("Filter")
-            val raw = o.raw
+            val raw = o.rawBytes()
             if (f == null || (f.t == T.NAME && f.s == "null")) return raw
             val filters = ArrayList<String>()
             if (f.t == T.NAME) filters.add(f.s)
@@ -662,7 +735,7 @@ object PdfEngine {
                             val nObj = so.get("N"); val firstObj = so.get("First")
                             if (nObj != null && firstObj != null) {
                                 val cnt = nObj.n.toInt(); val firstOff = firstObj.n.toInt()
-                                val r = Reader(dec, 0)
+                                val r = Reader(MemSrc(dec), 0)
                                 val hdr = ArrayList<Pair<Int, Int>>()
                                 for (i in 0 until cnt) {
                                     val on = parseInt(r).toInt()
@@ -671,7 +744,7 @@ object PdfEngine {
                                 }
                                 for (i in 0 until cnt) {
                                     if (i >= hdr.size) break
-                                    val rr = Reader(dec, firstOff + hdr[i].second)
+                                    val rr = Reader(MemSrc(dec), firstOff + hdr[i].second)
                                     m[i] = parseObject(rr)
                                 }
                             }
@@ -743,11 +816,11 @@ object PdfEngine {
     }
 
     // ---------------- 写出 ----------------
-    private fun ascii(out: ByteArrayOutputStream, s: String) {
+    private fun ascii(out: OutputStream, s: String) {
         for (c in s) out.write(c.code and 0xFF)
     }
 
-    private fun writeName(out: ByteArrayOutputStream, name: String) {
+    private fun writeName(out: OutputStream, name: String) {
         out.write('/'.code)
         for (ch in name) {
             val c = ch.code and 0xFF
@@ -759,7 +832,7 @@ object PdfEngine {
         }
     }
 
-    private fun writeHexStr(out: ByteArrayOutputStream, s: String) {
+    private fun writeHexStr(out: OutputStream, s: String) {
         out.write('<'.code)
         val h = "0123456789ABCDEF"
         for (ch in s) {
@@ -770,7 +843,7 @@ object PdfEngine {
         out.write('>'.code)
     }
 
-    private fun writeNum(out: ByteArrayOutputStream, n: Double) {
+    private fun writeNum(out: OutputStream, n: Double) {
         if (n.isFinite() && n == floor(n) && abs(n) < 1e15) {
             ascii(out, n.toLong().toString())
         } else {
@@ -778,7 +851,7 @@ object PdfEngine {
         }
     }
 
-    private fun serialize(o: Obj?, out: ByteArrayOutputStream, remap: Map<Int, Int>) {
+    private fun serialize(o: Obj?, out: OutputStream, remap: Map<Int, Int>) {
         if (o == null) { ascii(out, "null"); return }
         when (o.t) {
             T.NULL -> ascii(out, "null")
@@ -802,7 +875,7 @@ object PdfEngine {
         }
     }
 
-    private fun serializeDictEntries(d: List<Pair<String, Obj?>>, out: ByteArrayOutputStream, remap: Map<Int, Int>) {
+    private fun serializeDictEntries(d: List<Pair<String, Obj?>>, out: OutputStream, remap: Map<Int, Int>) {
         ascii(out, "<<")
         for ((k, v) in d) {
             out.write(' '.code)
@@ -850,21 +923,18 @@ object PdfEngine {
     // ---------------- 公开 API ----------------
 
     /** 获取 PDF 页数。失败抛出 PdfException。 */
-    fun getPageCount(bytes: ByteArray): Int {
-        val doc = Doc()
-        if (!doc.load(bytes)) throw PdfException(doc.err)
-        val count = doc.getPageList().size
-        if (count == 0) throw PdfException("未能解析出任何页面")
-        return count
-    }
+    fun getPageCount(bytes: ByteArray): Int = pageCountOf(MemSrc(bytes))
 
     /**
      * 提取 ranges 指定的页面（1 基，含端点），按给定顺序写入 output（去重保序）。
      * 返回提取的总页数。失败抛出 PdfException。
      */
-    fun extractPages(bytes: ByteArray, output: OutputStream, ranges: List<PageRange>): Int {
+    fun extractPages(bytes: ByteArray, output: OutputStream, ranges: List<PageRange>): Int =
+        extractOf(MemSrc(bytes), output, ranges)
+
+    private fun extractOf(src: Src, output: OutputStream, ranges: List<PageRange>): Int {
         val doc = Doc()
-        if (!doc.load(bytes)) throw PdfException(doc.err)
+        if (!doc.load(src)) throw PdfException(doc.err)
         val pages = doc.getPageList()
         val total = pages.size
         if (total == 0) throw PdfException("未能解析出任何页面")
@@ -926,14 +996,14 @@ object PdfEngine {
         val pagesRootNum = 2
         val maxObj = next - 1
 
-        // 序列化
-        val out = ByteArrayOutputStream()
+        // 序列化（边写边落盘，不整块缓冲输出）
+        val out = CountingOut(output)
         ascii(out, "%PDF-1.7\n")
         out.write(0xE2); out.write(0xE3); out.write(0xCF); out.write(0xD3); out.write('\n'.code)
         val offsets = IntArray(maxObj + 1)
 
         fun beginObj(num: Int) {
-            offsets[num] = out.size()
+            offsets[num] = out.count
             ascii(out, "$num 0 obj\n")
         }
 
@@ -966,9 +1036,9 @@ object PdfEngine {
                     out.write(' '.code)
                     serialize(v, out, remap)
                 }
-                ascii(out, " /Length ${o.raw.size} >>")
+                ascii(out, " /Length ${o.rawLength} >>")
                 ascii(out, "\nstream\n")
-                out.write(o.raw)
+                o.writeRawTo(out)
                 ascii(out, "\nendstream")
             } else if (o.t == T.DICT) {
                 // 若是页面，补 Parent
@@ -991,7 +1061,7 @@ object PdfEngine {
         }
 
         // xref
-        val xrefPos = out.size()
+        val xrefPos = out.count
         ascii(out, "xref\n")
         ascii(out, "0 ${maxObj + 1}\n")
         ascii(out, "0000000000 65535 f \n")
@@ -1003,14 +1073,38 @@ object PdfEngine {
         ascii(out, "\nstartxref\n")
         ascii(out, "$xrefPos\n")
         ascii(out, "%%EOF\n")
-
-        output.write(out.toByteArray())
+        out.flush()
         return selected.size
     }
 
     // ---------------- 文件便捷方法 ----------------
-    fun getPageCount(file: File): Int = getPageCount(file.readBytes())
+    // 文件版使用内存映射（mmap）按需读取，不把整个文件读进 Java 堆，
+    // 支持超大 PDF（仅受 2GB 限制），避免 OutOfMemoryError。
+    fun getPageCount(file: File): Int = withFileSrc(file) { pageCountOf(it) }
 
     fun extractPages(file: File, output: OutputStream, ranges: List<PageRange>): Int =
-        extractPages(file.readBytes(), output, ranges)
+        withFileSrc(file) { extractOf(it, output, ranges) }
+
+    private inline fun <R> withFileSrc(file: File, block: (Src) -> R): R {
+        val src = try {
+            MmapSrc(file)
+        } catch (e: PdfException) {
+            throw e
+        } catch (e: Exception) {
+            throw PdfException("无法读取文件：${e.message ?: "未知错误"}")
+        }
+        try {
+            return block(src)
+        } finally {
+            src.close()
+        }
+    }
+
+    private fun pageCountOf(src: Src): Int {
+        val doc = Doc()
+        if (!doc.load(src)) throw PdfException(doc.err)
+        val count = doc.getPageList().size
+        if (count == 0) throw PdfException("未能解析出任何页面")
+        return count
+    }
 }

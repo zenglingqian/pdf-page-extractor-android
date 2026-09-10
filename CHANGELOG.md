@@ -5,6 +5,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.1] - 2026-09-10
+
+### 修复
+- 修复打开大体积 PDF（约 250MB 以上）时 OutOfMemoryError 闪退：解析引擎改为内存映射（mmap）按需读取，不再把整个文件读进内存，理论上支持最大 2GB 的 PDF
+- 提取结果改为边生成边写入，输出环节不再额外占用整块内存
+
 ## [1.2.0] - 2026-09-05
 
 ### 新增
